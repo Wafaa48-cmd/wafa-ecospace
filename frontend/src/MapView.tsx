@@ -1,4 +1,3 @@
-
 import { useEffect, useRef, useState } from 'react'
 
 type Site = {
@@ -12,7 +11,10 @@ type Site = {
 
 type LeafletMap = {
   setView: (center: [number, number], zoom: number) => LeafletMap
-  on: (event: string, callback: (e: { latlng: { lat: number; lng: number } }) => void) => void
+  on: (
+    event: string,
+    callback: (e: { latlng: { lat: number; lng: number } }) => void
+  ) => void
   remove: () => void
 }
 
@@ -28,7 +30,10 @@ type LeafletMarker = {
 
 type Leaflet = {
   map: (element: HTMLElement, options?: object) => LeafletMap
-  tileLayer: (url: string, options: object) => {
+  tileLayer: (
+    url: string,
+    options: object
+  ) => {
     addTo: (map: LeafletMap) => void
   }
   layerGroup: () => LeafletLayerGroup
@@ -97,6 +102,7 @@ function escapeHtml(value: string): string {
       '"': '&quot;',
       "'": '&#39;',
     }
+
     return entities[char]
   })
 }
@@ -141,10 +147,11 @@ export default function MapView({
 
         mapRef.current = map
 
+        // خلفية صور الأقمار الصناعية من Esri
         L.tileLayer(
-          'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
           {
-            attribution: '&copy; OpenStreetMap contributors',
+            attribution: 'Tiles &copy; Esri',
             maxZoom: 19,
           }
         ).addTo(map)
