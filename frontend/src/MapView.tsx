@@ -1,3 +1,4 @@
+
 import { useEffect, useRef, useState } from 'react'
 
 type Site = {
@@ -79,8 +80,12 @@ function loadLeaflet(): Promise<Leaflet> {
       'load',
       () => {
         const leaflet = getLeaflet()
-        if (leaflet) resolve(leaflet)
-        else reject(new Error('Leaflet لم يتم تحميله'))
+
+        if (leaflet) {
+          resolve(leaflet)
+        } else {
+          reject(new Error('Leaflet لم يتم تحميله'))
+        }
       },
       { once: true }
     )
@@ -161,13 +166,16 @@ export default function MapView({
 
         // طبقة أسماء الأماكن والطرق فوق صور الأقمار الصناعية
         if (cartoKey) {
+          const encodedKey = encodeURIComponent(cartoKey.trim())
+
           L.tileLayer(
-            `https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png?key=${cartoKey}`,
+            `https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png?api_key=${encodedKey}`,
             {
               attribution:
                 '&copy; OpenStreetMap contributors, &copy; CARTO, Tiles &copy; Esri',
               subdomains: 'abcd',
               maxZoom: 20,
+              opacity: 1,
             }
           ).addTo(map)
         } else {
