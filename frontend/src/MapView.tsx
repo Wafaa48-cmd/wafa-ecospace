@@ -1,4 +1,3 @@
-
 import { useEffect, useRef, useState } from 'react'
 
 type Site = {
@@ -148,23 +147,39 @@ export default function MapView({
 
         mapRef.current = map
 
-        // صور الأقمار الصناعية
+        // صور الأقمار الصناعية من Esri
         L.tileLayer(
           'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
           {
-            attribution: 'Tiles &copy; Esri',
+            attribution: 'Tiles © Esri',
             maxZoom: 19,
           }
         ).addTo(map)
 
-        // طبقة أسماء الأماكن والبلديات والحدود
-        L.tileLayer(
-          'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}',
-          {
-            attribution: 'Labels &copy; Esri',
-            maxZoom: 19,
-          }
-        ).addTo(map)
+        // مفتاح CARTO المحفوظ في إعدادات Vercel
+        const cartoKey = import.meta.env.VITE_CARTO_API_KEY
+
+        // طبقة أسماء الأماكن والطرق فوق صور الأقمار الصناعية
+        if (cartoKey) {
+          L.tileLayer(
+            `https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png?key=${cartoKey}`,
+            {
+              attribution:
+                '&copy; OpenStreetMap contributors, &copy; CARTO, Tiles &copy; Esri',
+              subdomains: 'abcd',
+              maxZoom: 20,
+            }
+          ).addTo(map)
+        } else {
+          // طبقة بديلة عند غياب مفتاح CARTO
+          L.tileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}',
+            {
+              attribution: 'Labels © Esri',
+              maxZoom: 19,
+            }
+          ).addTo(map)
+        }
 
         markersRef.current = L.layerGroup().addTo(map)
 
