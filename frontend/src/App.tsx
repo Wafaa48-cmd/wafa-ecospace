@@ -416,6 +416,7 @@ function App() {
   const [filterWaste, setFilterWaste] = useState('')
   const [form, setForm] = useState(emptyForm)
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  const [showOrganizations, setShowOrganizations] = useState(false)
 
   useEffect(() => {
     try {
@@ -855,6 +856,24 @@ function App() {
     ),
   )
 
+  if (showOrganizations) {
+    return currentUserId ? (
+      <OrganizationsPage
+        sites={sites}
+        userId={currentUserId}
+        onBack={() => setShowOrganizations(false)}
+      />
+    ) : (
+      <div dir="rtl" style={{ padding: 40, textAlign: 'center', fontFamily: 'Arial, sans-serif' }}>
+        <h2>يرجى تسجيل الدخول أولًا</h2>
+        <p>يجب تسجيل الدخول لإدارة المؤسسات وطلبات التدخل.</p>
+        <button onClick={() => setShowOrganizations(false)} style={buttonStyle}>
+          العودة إلى لوحة التحكم
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div
       dir="rtl"
@@ -898,6 +917,30 @@ function App() {
         <p style={{ color: '#66756b' }}>
           متابعة المفرغات العشوائية والمخاطر البيئية في ولاية غليزان
         </p>
+
+        <div style={{ margin: '18px 0 22px', display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+          <button
+            type="button"
+            onClick={() => {
+              setShowForm(false)
+              setShowOrganizations(true)
+            }}
+            style={{
+              ...buttonStyle,
+              backgroundColor: '#2366a8',
+              color: '#ffffff',
+              padding: '12px 20px',
+              borderRadius: 8,
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'inline-block',
+              visibility: 'visible',
+              opacity: 1,
+            }}
+          >
+            دليل المؤسسات البيئية وإحالة المفرغات
+          </button>
+        </div>
 
         <div style={statsGridStyle}>
           <StatCard
@@ -1870,3 +1913,398 @@ const mutedStyle = {
 }
 
 export default App
+
+
+type Organization = {
+  id: string
+  user_id: string
+  name: string
+  organization_type: 'collection' | 'recycling'
+  waste_types: string[]
+  wilaya: string
+  commune: string
+  address: string | null
+  phone: string | null
+  email: string | null
+  latitude: number | null
+  longitude: number | null
+  capacity: string | null
+  coverage_area: string | null
+  verification_status: 'unverified' | 'verified'
+  created_at?: string
+}
+
+type InterventionRequest = {
+  id: string
+  user_id: string
+  site_id: number
+  organization_id: string
+  request_date?: string
+  status: 'sent' | 'accepted' | 'in_progress' | 'completed' | 'rejected'
+  intervention_date?: string | null
+  notes?: string | null
+  created_at?: string
+}
+
+const REQUEST_STATUS_LABELS: Record<InterventionRequest['status'], string> = {
+  sent: 'مسجلة',
+  accepted: 'مقبولة',
+  in_progress: 'قيد التنفيذ',
+  completed: 'مكتملة',
+  rejected: 'مرفوضة',
+}
+
+function OrganizationsPage({
+  sites,
+  userId,
+  onBack,
+}: {
+  sites: Site[]
+  userId: string
+  onBack: () => void
+}) {
+  // استعمال عميل Supabase نفسه مع الجداول التي أضيفت حديثًا.
+  const db = supabase as any
+  const [organizations, setOrganizations] = useState<Organization[]>([])
+  const [requests, setRequests] = useState<InterventionRequest[]>([])
+  const [loading, setLoading] = useState(true)
+  const [savingOrganization, setSavingOrganization] = useState(false)
+  const [savingRequest, setSavingRequest] = useState(false)
+  const [showOrganizationForm, setShowOrganizationForm] = useState(false)
+  const [organizationSearch, setOrganizationSearch] = useState('')
+  const [selectedSiteId, setSelectedSiteId] = useState('')
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState('')
+  const [requestNotes, setRequestNotes] = useState('')
+  const [organizationForm, setOrganizationForm] = useState({
+    name: '',
+    organization_type: 'collection' as 'collection' | 'recycling',
+    waste_types: 'نفايات منزلية',
+    commune: '',
+    address: '',
+    phone: '',
+    email: '',
+    latitude: '',
+    longitude: '',
+    capacity: '',
+    coverage_area: '',
+  })
+
+  const loadOrganizationsData = async () => {
+    setLoading(true)
+    const [orgResult, requestResult] = await Promise.all([
+      db.from('environmental_organizations').select('*').order('created_at', { ascending: false }),
+      db.from('intervention_requests').select('*').order('created_at', { ascending: false }),
+    ])
+
+    if (orgResult.error) {
+      console.error('تعذر تحميل المؤسسات البيئية:', orgResult.error.message)
+      window.alert(`تعذر تحميل المؤسسات البيئية: ${orgResult.error.message}`)
+    } else {
+      setOrganizations((orgResult.data ?? []) as Organization[])
+    }
+
+    if (requestResult.error) {
+      console.error('تعذر تحميل طلبات التدخل:', requestResult.error.message)
+      window.alert(`تعذر تحميل طلبات التدخل: ${requestResult.error.message}`)
+    } else {
+      setRequests((requestResult.data ?? []) as InterventionRequest[])
+    }
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    void loadOrganizationsData()
+    // تحميل بيانات الحساب الحالي عند فتح صفحة المؤسسات.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const saveOrganization = async () => {
+    if (!organizationForm.name.trim() || !organizationForm.commune.trim()) {
+      window.alert('يرجى إدخال اسم المؤسسة والبلدية على الأقل.')
+      return
+    }
+
+    const parseCoordinate = (value: string) => {
+      if (!value.trim()) return null
+      const number = Number(value)
+      return Number.isFinite(number) ? number : NaN
+    }
+    const latitude = parseCoordinate(organizationForm.latitude)
+    const longitude = parseCoordinate(organizationForm.longitude)
+
+    if (
+      Number.isNaN(latitude) ||
+      Number.isNaN(longitude) ||
+      (latitude !== null && (latitude < -90 || latitude > 90)) ||
+      (longitude !== null && (longitude < -180 || longitude > 180))
+    ) {
+      window.alert('تحققي من إحداثيات المؤسسة.')
+      return
+    }
+
+    const wasteTypes = organizationForm.waste_types
+      .split(',')
+      .map(item => item.trim())
+      .filter(Boolean)
+
+    setSavingOrganization(true)
+    const { data, error } = await db
+      .from('environmental_organizations')
+      .insert({
+        user_id: userId,
+        name: organizationForm.name.trim(),
+        organization_type: organizationForm.organization_type,
+        waste_types: wasteTypes,
+        wilaya: 'غليزان',
+        commune: organizationForm.commune.trim(),
+        address: organizationForm.address.trim() || null,
+        phone: organizationForm.phone.trim() || null,
+        email: organizationForm.email.trim() || null,
+        latitude,
+        longitude,
+        capacity: organizationForm.capacity.trim() || null,
+        coverage_area: organizationForm.coverage_area.trim() || null,
+        verification_status: 'unverified',
+      })
+      .select('*')
+      .single()
+
+    setSavingOrganization(false)
+    if (error || !data) {
+      console.error('تعذر حفظ المؤسسة:', error?.message)
+      window.alert(`لم يتم حفظ المؤسسة: ${error?.message ?? 'لم يتم إرجاع السجل'}`)
+      return
+    }
+
+    setOrganizations(previous => [data as Organization, ...previous])
+    setOrganizationForm({
+      name: '',
+      organization_type: 'collection',
+      waste_types: 'نفايات منزلية',
+      commune: '',
+      address: '',
+      phone: '',
+      email: '',
+      latitude: '',
+      longitude: '',
+      capacity: '',
+      coverage_area: '',
+    })
+    setShowOrganizationForm(false)
+    window.alert('تم تسجيل المؤسسة البيئية بنجاح.')
+  }
+
+  const createInterventionRequest = async () => {
+    if (!selectedSiteId || !selectedOrganizationId) {
+      window.alert('اختاري المفرغة والمؤسسة قبل تسجيل طلب التدخل.')
+      return
+    }
+
+    setSavingRequest(true)
+    const { data, error } = await db
+      .from('intervention_requests')
+      .insert({
+        user_id: userId,
+        site_id: Number(selectedSiteId),
+        organization_id: selectedOrganizationId,
+        status: 'sent',
+        notes: requestNotes.trim() || null,
+      })
+      .select('*')
+      .single()
+    setSavingRequest(false)
+
+    if (error || !data) {
+      console.error('تعذر تسجيل طلب التدخل:', error?.message)
+      window.alert(`تعذر تسجيل طلب التدخل: ${error?.message ?? 'لم يتم إرجاع السجل'}`)
+      return
+    }
+
+    setRequests(previous => [data as InterventionRequest, ...previous])
+    setSelectedSiteId('')
+    setSelectedOrganizationId('')
+    setRequestNotes('')
+    window.alert('تم تسجيل طلب التدخل داخل المنصة.')
+  }
+
+  const updateRequestStatus = async (
+    requestId: string,
+    status: InterventionRequest['status'],
+  ) => {
+    const { error } = await db
+      .from('intervention_requests')
+      .update({ status })
+      .eq('id', requestId)
+      .eq('user_id', userId)
+
+    if (error) {
+      window.alert(`تعذر تحديث حالة الطلب: ${error.message}`)
+      return
+    }
+    setRequests(previous =>
+      previous.map(request =>
+        request.id === requestId ? { ...request, status } : request,
+      ),
+    )
+  }
+
+  const visibleOrganizations = organizations.filter(organization => {
+    const query = organizationSearch.trim().toLowerCase()
+    return (
+      organization.name.toLowerCase().includes(query) ||
+      organization.commune.toLowerCase().includes(query) ||
+      organization.waste_types.join(' ').toLowerCase().includes(query)
+    )
+  })
+
+  const verifiedCount = organizations.filter(
+    organization => organization.verification_status === 'verified',
+  ).length
+  const collectionCount = organizations.filter(
+    organization => organization.organization_type === 'collection',
+  ).length
+  const recyclingCount = organizations.filter(
+    organization => organization.organization_type === 'recycling',
+  ).length
+  const completedCount = requests.filter(
+    request => request.status === 'completed',
+  ).length
+  const activeCount = requests.filter(
+    request => request.status === 'accepted' || request.status === 'in_progress',
+  ).length
+
+  return (
+    <div dir="rtl" style={{ minHeight: '100vh', backgroundColor: '#f4f8f5', fontFamily: 'Arial, sans-serif', color: '#1f3d2b' }}>
+      <header style={headerStyle}>
+        <div>
+          <h1 style={{ margin: 0 }}>WAFA ECOSPACE</h1>
+          <p style={{ margin: '5px 0', color: '#66806f' }}>دليل المؤسسات البيئية وطلبات التدخل — ولاية غليزان</p>
+        </div>
+        <button onClick={onBack} style={{ ...buttonStyle, marginRight: 'auto' }}>العودة إلى لوحة التحكم</button>
+      </header>
+
+      <main style={mainStyle}>
+        <h2>المؤسسات البيئية والتنسيق الميداني</h2>
+        <p style={mutedStyle}>
+          تسجيل مؤسسات جمع النفايات وتثمينها، ثم ربط المواقع المسجلة بطلبات تدخل قابلة للمتابعة.
+        </p>
+
+        <div style={statsGridStyle}>
+          <StatCard title="إجمالي المؤسسات" value={organizations.length} color="#1f3d2b" />
+          <StatCard title="مؤسسات الجمع" value={collectionCount} color="#2366a8" />
+          <StatCard title="مؤسسات التثمين والتدوير" value={recyclingCount} color="#287a4b" />
+          <StatCard title="مؤسسات موثقة" value={verifiedCount} color="#287a4b" />
+          <StatCard title="طلبات التدخل" value={requests.length} color="#9a6b16" />
+          <StatCard title="طلبات نشطة" value={activeCount} color="#2366a8" />
+          <StatCard title="تدخلات مكتملة" value={completedCount} color="#287a4b" />
+        </div>
+
+        <section style={cardStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+            <h2 style={{ marginTop: 0 }}>دليل المؤسسات البيئية</h2>
+            <button onClick={() => setShowOrganizationForm(value => !value)} style={buttonStyle}>
+              {showOrganizationForm ? 'إغلاق النموذج' : '+ إضافة مؤسسة بيئية'}
+            </button>
+          </div>
+
+          {showOrganizationForm && (
+            <div style={innerCardStyle}>
+              <h3 style={{ marginTop: 0 }}>تسجيل مؤسسة جديدة</h3>
+              <input style={inputStyle} placeholder="اسم المؤسسة *" value={organizationForm.name} onChange={event => setOrganizationForm({ ...organizationForm, name: event.target.value })} />
+              <label style={labelStyle}>نوع المؤسسة</label>
+              <select style={inputStyle} value={organizationForm.organization_type} onChange={event => setOrganizationForm({ ...organizationForm, organization_type: event.target.value as 'collection' | 'recycling' })}>
+                <option value="collection">جمع ورفع النفايات</option>
+                <option value="recycling">تثمين وإعادة تدوير النفايات</option>
+              </select>
+              <input style={inputStyle} placeholder="أنواع النفايات التي تتعامل معها (افصلي بينها بفاصلة)" value={organizationForm.waste_types} onChange={event => setOrganizationForm({ ...organizationForm, waste_types: event.target.value })} />
+              <input style={inputStyle} placeholder="البلدية *" value={organizationForm.commune} onChange={event => setOrganizationForm({ ...organizationForm, commune: event.target.value })} />
+              <input style={inputStyle} placeholder="العنوان" value={organizationForm.address} onChange={event => setOrganizationForm({ ...organizationForm, address: event.target.value })} />
+              <div style={filtersStyle}>
+                <input style={inputStyle} placeholder="رقم الهاتف" value={organizationForm.phone} onChange={event => setOrganizationForm({ ...organizationForm, phone: event.target.value })} />
+                <input style={inputStyle} type="email" placeholder="البريد الإلكتروني" value={organizationForm.email} onChange={event => setOrganizationForm({ ...organizationForm, email: event.target.value })} />
+                <input style={inputStyle} placeholder="الطاقة الاستيعابية" value={organizationForm.capacity} onChange={event => setOrganizationForm({ ...organizationForm, capacity: event.target.value })} />
+                <input style={inputStyle} placeholder="مجال التغطية" value={organizationForm.coverage_area} onChange={event => setOrganizationForm({ ...organizationForm, coverage_area: event.target.value })} />
+                <input style={inputStyle} type="number" step="any" placeholder="خط العرض (اختياري)" value={organizationForm.latitude} onChange={event => setOrganizationForm({ ...organizationForm, latitude: event.target.value })} />
+                <input style={inputStyle} type="number" step="any" placeholder="خط الطول (اختياري)" value={organizationForm.longitude} onChange={event => setOrganizationForm({ ...organizationForm, longitude: event.target.value })} />
+              </div>
+              <button disabled={savingOrganization} onClick={saveOrganization} style={{ ...buttonStyle, opacity: savingOrganization ? 0.6 : 1 }}>
+                {savingOrganization ? 'جارٍ الحفظ...' : 'حفظ المؤسسة'}
+              </button>
+            </div>
+          )}
+
+          <input style={inputStyle} placeholder="ابحث باسم المؤسسة أو البلدية أو نوع النفايات..." value={organizationSearch} onChange={event => setOrganizationSearch(event.target.value)} />
+
+          {loading ? (
+            <p>جارٍ تحميل المؤسسات وطلبات التدخل...</p>
+          ) : visibleOrganizations.length === 0 ? (
+            <p style={mutedStyle}>لا توجد مؤسسات مسجلة مطابقة. يمكنك إضافة مؤسسة من الزر أعلاه.</p>
+          ) : (
+            visibleOrganizations.map(organization => (
+              <article key={organization.id} style={siteStyle}>
+                <h3 style={{ marginBottom: 8 }}>{organization.name}</h3>
+                <p><strong>النوع:</strong> {organization.organization_type === 'collection' ? 'جمع النفايات' : 'تثمين وإعادة تدوير'}</p>
+                <p><strong>البلدية:</strong> {organization.commune} — <strong>الولاية:</strong> {organization.wilaya}</p>
+                <p><strong>أنواع النفايات:</strong> {organization.waste_types?.join('، ') || 'غير محددة'}</p>
+                {organization.address && <p><strong>العنوان:</strong> {organization.address}</p>}
+                {organization.phone && <p><strong>الهاتف:</strong> {organization.phone}</p>}
+                {organization.email && <p><strong>البريد الإلكتروني:</strong> {organization.email}</p>}
+                {organization.capacity && <p><strong>الطاقة الاستيعابية:</strong> {organization.capacity}</p>}
+                {organization.coverage_area && <p><strong>مجال التغطية:</strong> {organization.coverage_area}</p>}
+                <p><strong>حالة التوثيق:</strong> {organization.verification_status === 'verified' ? 'موثقة' : 'غير موثقة — بانتظار التحقق'}</p>
+              </article>
+            ))
+          )}
+        </section>
+
+        <section style={cardStyle}>
+          <h2 style={{ marginTop: 0 }}>إحالة مفرغة عشوائية إلى مؤسسة</h2>
+          <p style={mutedStyle}>اختاري موقعًا مسجلًا ومؤسسة مناسبة لإنشاء طلب تدخل ومتابعة حالته.</p>
+          <select style={inputStyle} value={selectedSiteId} onChange={event => setSelectedSiteId(event.target.value)}>
+            <option value="">اختيار المفرغة</option>
+            {sites.map(site => <option key={site.id} value={site.id}>{site.name} — {site.commune} ({site.risk})</option>)}
+          </select>
+          <select style={inputStyle} value={selectedOrganizationId} onChange={event => setSelectedOrganizationId(event.target.value)}>
+            <option value="">اختيار المؤسسة</option>
+            {organizations.map(organization => <option key={organization.id} value={organization.id}>{organization.name} — {organization.commune}</option>)}
+          </select>
+          <textarea style={{ ...inputStyle, minHeight: 90 }} placeholder="ملاحظات حول التدخل المطلوب (اختياري)" value={requestNotes} onChange={event => setRequestNotes(event.target.value)} />
+          <button disabled={savingRequest || organizations.length === 0 || sites.length === 0} onClick={createInterventionRequest} style={{ ...buttonStyle, opacity: savingRequest || organizations.length === 0 || sites.length === 0 ? 0.6 : 1 }}>
+            {savingRequest ? 'جارٍ التسجيل...' : 'تسجيل طلب التدخل'}
+          </button>
+          {organizations.length === 0 && <p style={mutedStyle}>أضيفي مؤسسة واحدة على الأقل قبل تسجيل طلب التدخل.</p>}
+          <p style={{ ...mutedStyle, backgroundColor: '#fff8e8', padding: 12, borderRadius: 8 }}>
+            تنبيه: الطلب يُسجّل ويُتابع داخل منصة WAFA ECOSPACE فقط؛ لا يتم حاليًا إرسال إشعار خارجي أو رسالة تلقائية إلى المؤسسة.
+          </p>
+        </section>
+
+        <section style={cardStyle}>
+          <h2 style={{ marginTop: 0 }}>متابعة طلبات التدخل ({requests.length})</h2>
+          {requests.length === 0 ? (
+            <p style={mutedStyle}>لا توجد طلبات تدخل مسجلة بعد.</p>
+          ) : (
+            requests.map(request => {
+              const site = sites.find(item => item.id === Number(request.site_id))
+              const organization = organizations.find(item => item.id === request.organization_id)
+              return (
+                <article key={request.id} style={siteStyle}>
+                  <h3>{site?.name ?? `الموقع رقم ${request.site_id}`}</h3>
+                  <p><strong>المؤسسة:</strong> {organization?.name ?? 'مؤسسة غير ظاهرة ضمن حسابك'}</p>
+                  <p><strong>البلدية:</strong> {site?.commune ?? 'غير محددة'}</p>
+                  <p><strong>تاريخ التسجيل:</strong> {request.created_at ? new Date(request.created_at).toLocaleDateString('ar-DZ') : 'غير متوفر'}</p>
+                  {request.notes && <p><strong>ملاحظات:</strong> {request.notes}</p>}
+                  <label style={labelStyle}>حالة الطلب</label>
+                  <select style={inputStyle} value={request.status} onChange={event => updateRequestStatus(request.id, event.target.value as InterventionRequest['status'])}>
+                    {Object.entries(REQUEST_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select>
+                </article>
+              )
+            })
+          )}
+        </section>
+        <button onClick={onBack} style={buttonStyle}>العودة إلى لوحة التحكم</button>
+      </main>
+    </div>
+  )
+}
+

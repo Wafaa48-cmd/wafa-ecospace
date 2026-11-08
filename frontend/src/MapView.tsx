@@ -217,7 +217,6 @@ export default function MapView({
         const map = L.map(mapElement.current).setView([35.737, 0.555], 9)
         mapRef.current = map
 
-        // صور الأقمار الصناعية
         L.tileLayer(
           'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
           {
@@ -226,7 +225,6 @@ export default function MapView({
           }
         ).addTo(map)
 
-        // أسماء الطرق والمعالم
         L.tileLayer(
           'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}',
           {
@@ -269,7 +267,6 @@ export default function MapView({
 
         if (cancelled) return
 
-        // طبقة الحدود: خط أبيض خارجي لتوضيح الحدود فوق صور الأقمار
         const whiteOutline = L.geoJSON(geoData, {
           pane: 'overlayPane',
           style: {
@@ -282,7 +279,6 @@ export default function MapView({
 
         whiteOutline.addTo(map)
 
-        // طبقة الحدود الخضراء وأسماء البلديات
         const communeLayer = L.geoJSON(geoData, {
           pane: 'overlayPane',
           style: {
@@ -312,7 +308,6 @@ export default function MapView({
         communeLayer.addTo(map)
         communeLayer.bringToFront()
 
-        // ضبط الخريطة على حدود البلديات المحملة
         map.fitBounds(communeLayer.getBounds(), {
           padding: [25, 25],
           maxZoom: 10,
@@ -348,7 +343,6 @@ export default function MapView({
     }
   }, [])
 
-  // عرض مواقع المفرغات المسجلة
   useEffect(() => {
     if (!ready || !markersRef.current) return
 
@@ -376,11 +370,13 @@ export default function MapView({
       }
 
       const color =
-        site.risk === 'مرتفع'
-          ? '#dc2626'
-          : site.risk === 'متوسط'
-            ? '#f59e0b'
-            : '#16a34a'
+        site.risk === 'حرج'
+          ? '#7b1e1e'
+          : site.risk === 'مرتفع'
+            ? '#dc2626'
+            : site.risk === 'متوسط'
+              ? '#f59e0b'
+              : '#16a34a'
 
       const popup = `
         <div style="direction:rtl;text-align:right;min-width:130px">
@@ -489,6 +485,7 @@ export default function MapView({
         }}
       >
         <span style={{ color: '#15803d' }}>▰ حدود البلديات</span>
+        <span style={{ color: '#7b1e1e' }}>● خطر حرج</span>
         <span style={{ color: '#dc2626' }}>● خطر مرتفع</span>
         <span style={{ color: '#d97706' }}>● خطر متوسط</span>
         <span style={{ color: '#16a34a' }}>● خطر منخفض</span>
