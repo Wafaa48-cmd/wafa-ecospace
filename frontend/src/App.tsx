@@ -834,6 +834,27 @@ function App() {
     ]),
   ]
 
+  // مؤشرات التغطية الجغرافية للبلديات الـ36.
+  const TOTAL_COMMUNES = 36
+
+  const registeredCommunesCount = new Set(
+    sites
+      .map(site => site.commune.trim())
+      .filter(Boolean),
+  ).size
+
+  const unregisteredCommunesCount = Math.max(
+    0,
+    TOTAL_COMMUNES - registeredCommunesCount,
+  )
+
+  const communeCoverage = Math.min(
+    100,
+    Math.round(
+      (registeredCommunesCount / TOTAL_COMMUNES) * 100,
+    ),
+  )
+
   return (
     <div
       dir="rtl"
@@ -1016,6 +1037,69 @@ function App() {
             }}
           >
             ملاحظة: هذه المؤشرات وصفية وتعتمد على المواقع المسجلة فقط؛ ولا تمثل مسحًا شاملًا لجميع بلديات الولاية ما لم تُستكمل البيانات الميدانية.
+          </p>
+        </section>
+
+        {/* لوحة التغطية الجغرافية للبلديات */}
+        <section style={cardStyle}>
+          <h2>التغطية الجغرافية لبلديات ولاية غليزان</h2>
+
+          <p style={mutedStyle}>
+            متابعة توزيع عمليات تسجيل المفرغات العشوائية عبر البلديات الـ36.
+          </p>
+
+          <div style={statsGridStyle}>
+            <StatCard
+              title="إجمالي بلديات الولاية"
+              value={TOTAL_COMMUNES}
+              color="#2366a8"
+            />
+
+            <StatCard
+              title="بلديات بها مواقع مسجلة"
+              value={registeredCommunesCount}
+              color="#287a4b"
+            />
+
+            <StatCard
+              title="بلديات دون تسجيل بعد"
+              value={unregisteredCommunesCount}
+              color="#d68910"
+            />
+          </div>
+
+          <div
+            style={{
+              backgroundColor: '#e5eee8',
+              height: 24,
+              borderRadius: 20,
+              overflow: 'hidden',
+              margin: '20px 0',
+            }}
+          >
+            <div
+              style={{
+                width: `${communeCoverage}%`,
+                height: '100%',
+                backgroundColor: '#287a4b',
+                borderRadius: 20,
+                transition: 'width 0.3s ease',
+              }}
+            />
+          </div>
+
+          <h3
+            style={{
+              textAlign: 'center',
+              color: '#287a4b',
+            }}
+          >
+            نسبة التغطية الجغرافية: {communeCoverage}%
+          </h3>
+
+          <p style={mutedStyle}>
+            تُحسب التغطية اعتمادًا على البلديات التي تحتوي على موقع واحد مسجل على الأقل.
+            عدم وجود تسجيل لا يعني بالضرورة عدم وجود مفرغات عشوائية.
           </p>
         </section>
 
