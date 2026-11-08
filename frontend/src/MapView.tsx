@@ -10,13 +10,32 @@ type Site = {
   longitude: string
 }
 
-type LeafletMap = {
-  setView: (center: [number, number], zoom: number) => LeafletMap
-  on: (
-    event: string,
-    callback: (e: { latlng: { lat: number; lng: number } }) => void
-  ) => void
-  remove: () => void
+type MapEvent = {
+  latlng: { lat: number; lng: number }
+}
+
+type GeoFeature = {
+  type?: string
+  properties?: {
+    shapeName?: string
+  }
+  geometry?: {
+    type: string
+    coordinates: unknown
+  }
+}
+
+type GeoJSONData = {
+  type: string
+  features: GeoFeature[]
+}
+
+type LeafletLayer = {
+  addTo: (map: LeafletMap | LeafletLayerGroup) => LeafletLayer
+  bindPopup: (content: string) => LeafletLayer
+  bindTooltip: (content: string, options?: object) => LeafletLayer
+  bringToFront: () => LeafletLayer
+  getBounds: () => unknown
 }
 
 type LeafletLayerGroup = {
@@ -24,24 +43,33 @@ type LeafletLayerGroup = {
   clearLayers: () => void
 }
 
-type LeafletMarker = {
-  bindPopup: (content: string) => LeafletMarker
-  addTo: (group: LeafletLayerGroup) => LeafletMarker
+type LeafletMap = {
+  setView: (center: [number, number], zoom: number) => LeafletMap
+  fitBounds: (bounds: unknown, options?: object) => LeafletMap
+  on: (event: string, callback: (e: MapEvent) => void) => void
+  remove: () => void
+  invalidateSize: () => void
 }
 
 type Leaflet = {
   map: (element: HTMLElement, options?: object) => LeafletMap
-  tileLayer: (
-    url: string,
-    options: object
-  ) => {
-    addTo: (map: LeafletMap) => void
-  }
+  tileLayer: (url: string, options: object) => LeafletLayer
   layerGroup: () => LeafletLayerGroup
-  circleMarker: (
-    position: [number, number],
-    options: object
-  ) => LeafletMarker
+  circleMarker: (position: [number, number], options: object) => LeafletLayer
+  geoJSON: (
+    data: GeoJSONData,
+    options: {
+      style?: object
+      pane?: string
+      onEachFeature?: (feature: GeoFeature, layer: LeafletLayer) => void
+    }
+  ) => LeafletLayer
+}
+
+type MapViewProps = {
+  sites: Site[]
+  selectingLocation: boolean
+  onLocationSelect: (latitude: string, longitude: string) => void
 }
 
 function getLeaflet(): Leaflet | undefined {
@@ -50,72 +78,109 @@ function getLeaflet(): Leaflet | undefined {
 
 function loadLeaflet(): Promise<Leaflet> {
   return new Promise((resolve, reject) => {
-    const ready = getLeaflet()
+    const existing = getLeaflet()
 
-    if (ready) {
-      resolve(ready)
+    if (existing) {
+      resolve(existing)
       return
     }
 
-    if (!document.getElementById('leaflet-css')) {
-      const link = document.createElement('link')
-      link.id = 'leaflet-css'
-      link.rel = 'stylesheet'
-      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
-      document.head.appendChild(link)
+    let css = document.getElementById('leaflet-css') as HTMLLinkElement | null
+
+    if (!css) {
+      css = document.createElement('link')
+      css.id = 'leaflet-css'
+      css.rel = 'stylesheet'
+      css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
+      document.head.appendChild(css)
     }
 
-    let script = document.getElementById(
-      'leaflet-js'
-    ) as HTMLScriptElement | null
+    let script = document.getElementById('leaflet-js') as HTMLScriptElement | null
 
-    if (!script) {
-      script = document.createElement('script')
-      script.id = 'leaflet-js'
-      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
-      document.body.appendChild(script)
+    if (script) {
+      const checkLeaflet = () => {
+        const L = getLeaflet()
+        if (L) resolve(L)
+        else reject(new Error('لم يتم تحميل مكتبة الخرائط'))
+      }
+
+      script.addEventListener('load', checkLeaflet, { once: true })
+      script.addEventListener(
+        'error',
+        () => reject(new Error('تعذر تحميل مكتبة الخرائط')),
+        { once: true }
+      )
+
+      if (getLeaflet()) checkLeaflet()
+      return
     }
 
-    script.addEventListener(
-      'load',
-      () => {
-        const leaflet = getLeaflet()
+    script = document.createElement('script')
+    script.id = 'leaflet-js'
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
 
-        if (leaflet) {
-          resolve(leaflet)
-        } else {
-          reject(new Error('Leaflet لم يتم تحميله'))
-        }
-      },
-      { once: true }
-    )
+    script.onload = () => {
+      const L = getLeaflet()
+      if (L) resolve(L)
+      else reject(new Error('لم يتم تحميل مكتبة الخرائط بشكل صحيح'))
+    }
 
-    script.addEventListener(
-      'error',
-      () => reject(new Error('تعذر تحميل مكتبة الخريطة')),
-      { once: true }
-    )
+    script.onerror = () => reject(new Error('تعذر الاتصال بمكتبة الخرائط'))
+
+    document.body.appendChild(script)
   })
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, char => {
+  return value.replace(/[&<>"']/g, (char) => {
     const entities: Record<string, string> = {
       '&': '&amp;',
       '<': '&lt;',
       '>': '&gt;',
       '"': '&quot;',
-      "'": '&#39;',
+      "'": '&#039;',
     }
-
     return entities[char]
   })
 }
 
-type MapViewProps = {
-  sites: Site[]
-  selectingLocation: boolean
-  onLocationSelect: (latitude: string, longitude: string) => void
+const communeNames: Record<string, string> = {
+  Zemmora: 'زمورة',
+  Yellel: 'يلل',
+  'Souk El Had': 'سوق الحد',
+  'Sidi Saada': 'سيدي سعادة',
+  "Sidi M'Hamed Benaouda": 'سيدي امحمد بن عودة',
+  "Sidi M'Hamed Ben Ali": 'سيدي امحمد بن علي',
+  'Sidi Lazreg': 'سيدي لزرق',
+  'Sidi Khettab': 'سيدي خطاب',
+  Relizane: 'غليزان',
+  Ramka: 'الرمكة',
+  'Ouled Aiche': 'أولاد عايش',
+  'Ouled Sidi Mihoub': 'أولاد سيدي الميهوب',
+  'Oued Rhiou': 'وادي رهيو',
+  'Oued Essalem': 'وادي السلام',
+  'Oued El Djemaa': 'وادي الجمعة',
+  Ouarizane: 'واريزان',
+  'Merdja Sidi Abed': 'مرجة سيدي عابد',
+  Mendes: 'منداس',
+  Mediouna: 'مديونة',
+  Mazouna: 'مازونة',
+  Lahlef: 'لحلاف',
+  Kalaa: 'القلعة',
+  Hamri: 'حمري',
+  'Had Echkalla': 'حد الشكالة',
+  'El Ouldja': 'الولجة',
+  'El Matmar': 'المطمر',
+  'El Hassi': 'الحاسي',
+  'El Hamadna': 'الحمادنة',
+  'El Guettar': 'القطار',
+  Djdiouia: 'جديوية',
+  'Dar Ben Abdellah': 'دار بن عبد الله',
+  'Beni Zentis': 'بني زنطيس',
+  'Beni Dergoun': 'بني درقون',
+  Bendaoud: 'بن داود',
+  'Belassel Bouzegza': 'بلعسل بوزقزة',
+  'Ammi Moussa': 'عمي موسى',
 }
 
 export default function MapView({
@@ -126,12 +191,12 @@ export default function MapView({
   const mapElement = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<LeafletMap | null>(null)
   const markersRef = useRef<LeafletLayerGroup | null>(null)
-
   const selectingRef = useRef(selectingLocation)
   const callbackRef = useRef(onLocationSelect)
 
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
+  const [mapStatus, setMapStatus] = useState('جارٍ تحميل الخريطة...')
 
   useEffect(() => {
     selectingRef.current = selectingLocation
@@ -141,18 +206,18 @@ export default function MapView({
   useEffect(() => {
     let cancelled = false
 
-    loadLeaflet()
-      .then(L => {
+    async function initializeMap() {
+      try {
+        setMapStatus('جارٍ تحميل مكتبة الخرائط...')
+
+        const L = await loadLeaflet()
+
         if (cancelled || !mapElement.current) return
 
-        const map = L.map(mapElement.current).setView(
-          [35.737, 0.555],
-          9
-        )
-
+        const map = L.map(mapElement.current).setView([35.737, 0.555], 9)
         mapRef.current = map
 
-        // صور الأقمار الصناعية من Esri
+        // صور الأقمار الصناعية
         L.tileLayer(
           'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
           {
@@ -161,37 +226,18 @@ export default function MapView({
           }
         ).addTo(map)
 
-        // مفتاح CARTO المحفوظ في إعدادات Vercel
-        const cartoKey = import.meta.env.VITE_CARTO_API_KEY
-
-        // طبقة أسماء الأماكن والطرق فوق صور الأقمار الصناعية
-        if (cartoKey) {
-          const encodedKey = encodeURIComponent(cartoKey.trim())
-
-          L.tileLayer(
-            `https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png?api_key=${encodedKey}`,
-            {
-              attribution:
-                '&copy; OpenStreetMap contributors, &copy; CARTO, Tiles &copy; Esri',
-              subdomains: 'abcd',
-              maxZoom: 20,
-              opacity: 1,
-            }
-          ).addTo(map)
-        } else {
-          // طبقة بديلة عند غياب مفتاح CARTO
-          L.tileLayer(
-            'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}',
-            {
-              attribution: 'Labels © Esri',
-              maxZoom: 19,
-            }
-          ).addTo(map)
-        }
+        // أسماء الطرق والمعالم
+        L.tileLayer(
+          'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}',
+          {
+            attribution: 'Labels © Esri',
+            maxZoom: 19,
+          }
+        ).addTo(map)
 
         markersRef.current = L.layerGroup().addTo(map)
 
-        map.on('click', event => {
+        map.on('click', (event) => {
           if (selectingRef.current) {
             callbackRef.current(
               event.latlng.lat.toFixed(6),
@@ -200,31 +246,119 @@ export default function MapView({
           }
         })
 
-        setReady(true)
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setError('تعذر تحميل الخريطة. تحققي من اتصال الإنترنت.')
+        setMapStatus('جارٍ تحميل حدود البلديات الـ36...')
+
+        const response = await fetch('/relizane-communes.geojson', {
+          cache: 'no-store',
+        })
+
+        if (!response.ok) {
+          throw new Error(`تعذر تحميل ملف البلديات: ${response.status}`)
         }
-      })
+
+        const geoData = (await response.json()) as GeoJSONData
+
+        if (
+          !geoData ||
+          geoData.type !== 'FeatureCollection' ||
+          !Array.isArray(geoData.features) ||
+          geoData.features.length !== 36
+        ) {
+          throw new Error('ملف GeoJSON لا يحتوي على البلديات الـ36 المطلوبة.')
+        }
+
+        if (cancelled) return
+
+        // طبقة الحدود: خط أبيض خارجي لتوضيح الحدود فوق صور الأقمار
+        const whiteOutline = L.geoJSON(geoData, {
+          pane: 'overlayPane',
+          style: {
+            color: '#ffffff',
+            weight: 6,
+            opacity: 0.95,
+            fillOpacity: 0,
+          },
+        })
+
+        whiteOutline.addTo(map)
+
+        // طبقة الحدود الخضراء وأسماء البلديات
+        const communeLayer = L.geoJSON(geoData, {
+          pane: 'overlayPane',
+          style: {
+            color: '#00ff35',
+            weight: 3,
+            opacity: 1,
+            fillColor: '#22c55e',
+            fillOpacity: 0.08,
+          },
+
+          onEachFeature: (feature, layer) => {
+            const englishName = feature.properties?.shapeName?.trim() || ''
+            const arabicName = communeNames[englishName] || englishName
+
+            if (!arabicName) return
+
+            layer.bindTooltip(escapeHtml(arabicName), {
+              permanent: true,
+              direction: 'center',
+              className: 'commune-name-tooltip',
+              opacity: 1,
+              interactive: false,
+            })
+          },
+        })
+
+        communeLayer.addTo(map)
+        communeLayer.bringToFront()
+
+        // ضبط الخريطة على حدود البلديات المحملة
+        map.fitBounds(communeLayer.getBounds(), {
+          padding: [25, 25],
+          maxZoom: 10,
+        })
+
+        map.invalidateSize()
+
+        if (!cancelled) {
+          setReady(true)
+          setError('')
+          setMapStatus(`تم تحميل حدود البلديات بنجاح: ${geoData.features.length} بلدية`)
+        }
+      } catch (err) {
+        console.error('Map initialization error:', err)
+
+        if (!cancelled) {
+          setError(
+            err instanceof Error ? err.message : 'حدث خطأ أثناء تحميل الخريطة'
+          )
+          setMapStatus('تعذر تحميل حدود البلديات')
+        }
+      }
+    }
+
+    initializeMap()
 
     return () => {
       cancelled = true
       mapRef.current?.remove()
       mapRef.current = null
       markersRef.current = null
+      setReady(false)
     }
   }, [])
 
+  // عرض مواقع المفرغات المسجلة
   useEffect(() => {
-    if (!ready || !markersRef.current || !getLeaflet()) return
+    if (!ready || !markersRef.current) return
 
-    const L = getLeaflet()!
+    const L = getLeaflet()
+    if (!L) return
+
     const layer = markersRef.current
-
     layer.clearLayers()
 
-    sites.forEach(site => {
+    sites.forEach((site) => {
       if (!site.latitude?.trim() || !site.longitude?.trim()) return
 
       const latitude = Number(site.latitude)
@@ -265,7 +399,7 @@ export default function MapView({
         radius: 9,
         color,
         fillColor: color,
-        fillOpacity: 0.85,
+        fillOpacity: 0.9,
         weight: 2,
       })
         .bindPopup(popup)
@@ -276,33 +410,25 @@ export default function MapView({
   return (
     <div style={{ width: '100%', direction: 'rtl' }}>
       {selectingLocation && (
-        <div
-          style={{
-            padding: '10px',
-            marginBottom: '8px',
-            background: '#e8f5e9',
-            color: '#216b37',
-            borderRadius: '8px',
-            textAlign: 'center',
-          }}
-        >
+        <div className="map-select-message">
           انقري على الخريطة لتحديد موقع المفرغة
         </div>
       )}
 
-      {error && (
-        <div
-          style={{
-            padding: '12px',
-            color: '#b91c1c',
-            background: '#fee2e2',
-            borderRadius: '8px',
-            marginBottom: '8px',
-          }}
-        >
-          {error}
-        </div>
-      )}
+      <div
+        style={{
+          padding: '9px 12px',
+          marginBottom: '8px',
+          background: error ? '#fee2e2' : '#dcfce7',
+          color: error ? '#991b1b' : '#166534',
+          borderRadius: '8px',
+          fontWeight: 'bold',
+          textAlign: 'center',
+          fontSize: '13px',
+        }}
+      >
+        {error || mapStatus}
+      </div>
 
       <div
         ref={mapElement}
@@ -310,11 +436,47 @@ export default function MapView({
           width: '100%',
           height: '430px',
           borderRadius: '12px',
-          border: '1px solid #ddd',
+          border: '2px solid #15803d',
           background: '#e5e7eb',
-          zIndex: 1,
+          position: 'relative',
+          zIndex: 0,
         }}
       />
+
+      <style>
+        {`
+          .commune-name-tooltip {
+            background: rgba(255, 255, 255, 0.97) !important;
+            color: #064e20 !important;
+            border: 2px solid #15803d !important;
+            border-radius: 6px !important;
+            padding: 5px 8px !important;
+            font-family: Arial, sans-serif !important;
+            font-size: 13px !important;
+            font-weight: 900 !important;
+            white-space: nowrap !important;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45) !important;
+            text-align: center !important;
+          }
+
+          .commune-name-tooltip:before {
+            display: none !important;
+          }
+
+          .leaflet-tooltip-pane {
+            z-index: 700 !important;
+          }
+
+          .map-select-message {
+            padding: 10px;
+            margin-bottom: 8px;
+            background: #e8f5e9;
+            color: #216b37;
+            border-radius: 8px;
+            text-align: center;
+          }
+        `}
+      </style>
 
       <div
         style={{
@@ -326,6 +488,7 @@ export default function MapView({
           fontSize: '13px',
         }}
       >
+        <span style={{ color: '#15803d' }}>▰ حدود البلديات</span>
         <span style={{ color: '#dc2626' }}>● خطر مرتفع</span>
         <span style={{ color: '#d97706' }}>● خطر متوسط</span>
         <span style={{ color: '#16a34a' }}>● خطر منخفض</span>
