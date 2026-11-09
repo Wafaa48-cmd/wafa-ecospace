@@ -1,5 +1,9 @@
 
 import { useEffect, useRef, useState } from 'react'
+import * as L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
+import parseGeoraster from 'georaster'
+import GeoRasterLayer from 'georaster-layer-for-leaflet'
 
 type Site = {
   id: number
@@ -10,18 +14,9 @@ type Site = {
   longitude: string
 }
 
-type MapEvent = {
-  latlng: { lat: number; lng: number }
-}
-
 type GeoFeature = {
-  type?: string
   properties?: {
     shapeName?: string
-  }
-  geometry?: {
-    type: string
-    coordinates: unknown
   }
 }
 
@@ -30,118 +25,16 @@ type GeoJSONData = {
   features: GeoFeature[]
 }
 
-type LeafletLayer = {
-  addTo: (map: LeafletMap | LeafletLayerGroup) => LeafletLayer
-  bindPopup: (content: string) => LeafletLayer
-  bindTooltip: (content: string, options?: object) => LeafletLayer
-  bringToFront: () => LeafletLayer
-  getBounds: () => unknown
-}
+type RasterMode = 'none' | 'truecolor' | 'ndvi'
 
-type LeafletLayerGroup = {
-  addTo: (map: LeafletMap) => LeafletLayerGroup
-  clearLayers: () => void
-}
-
-type LeafletMap = {
-  setView: (center: [number, number], zoom: number) => LeafletMap
-  fitBounds: (bounds: unknown, options?: object) => LeafletMap
-  on: (event: string, callback: (e: MapEvent) => void) => void
-  remove: () => void
-  invalidateSize: () => void
-}
-
-type Leaflet = {
-  map: (element: HTMLElement, options?: object) => LeafletMap
-  tileLayer: (url: string, options: object) => LeafletLayer
-  layerGroup: () => LeafletLayerGroup
-  circleMarker: (position: [number, number], options: object) => LeafletLayer
-  geoJSON: (
-    data: GeoJSONData,
-    options: {
-      style?: object
-      pane?: string
-      onEachFeature?: (feature: GeoFeature, layer: LeafletLayer) => void
-    }
-  ) => LeafletLayer
+type RasterLayerInstance = L.Layer & {
+  addTo: (map: L.Map) => RasterLayerInstance
 }
 
 type MapViewProps = {
   sites: Site[]
   selectingLocation: boolean
   onLocationSelect: (latitude: string, longitude: string) => void
-}
-
-function getLeaflet(): Leaflet | undefined {
-  return (window as Window & { L?: Leaflet }).L
-}
-
-function loadLeaflet(): Promise<Leaflet> {
-  return new Promise((resolve, reject) => {
-    const existing = getLeaflet()
-
-    if (existing) {
-      resolve(existing)
-      return
-    }
-
-    let css = document.getElementById('leaflet-css') as HTMLLinkElement | null
-
-    if (!css) {
-      css = document.createElement('link')
-      css.id = 'leaflet-css'
-      css.rel = 'stylesheet'
-      css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
-      document.head.appendChild(css)
-    }
-
-    let script = document.getElementById('leaflet-js') as HTMLScriptElement | null
-
-    if (script) {
-      const checkLeaflet = () => {
-        const L = getLeaflet()
-        if (L) resolve(L)
-        else reject(new Error('لم يتم تحميل مكتبة الخرائط'))
-      }
-
-      script.addEventListener('load', checkLeaflet, { once: true })
-      script.addEventListener(
-        'error',
-        () => reject(new Error('تعذر تحميل مكتبة الخرائط')),
-        { once: true }
-      )
-
-      if (getLeaflet()) checkLeaflet()
-      return
-    }
-
-    script = document.createElement('script')
-    script.id = 'leaflet-js'
-    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
-
-    script.onload = () => {
-      const L = getLeaflet()
-      if (L) resolve(L)
-      else reject(new Error('لم يتم تحميل مكتبة الخرائط بشكل صحيح'))
-    }
-
-    script.onerror = () => reject(new Error('تعذر الاتصال بمكتبة الخرائط'))
-
-    document.body.appendChild(script)
-  })
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => {
-    const entities: Record<string, string> = {
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#039;',
-    }
-    return entities[char]
-  })
 }
 
 const communeNames: Record<string, string> = {
@@ -183,38 +76,101 @@ const communeNames: Record<string, string> = {
   'Ammi Moussa': 'عمي موسى',
 }
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => {
+    const entities: Record<string, string> = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#039;',
+    }
+    return entities[char]
+  })
+}
+
+function getNdviColor(value: number): string {
+  if (!Number.isFinite(value) || value < -1 || value > 1) {
+    return 'rgba(0,0,0,0)'
+  }
+
+  const stops = [
+    { value: -1, color: [120, 45, 35] },
+    { value: -0.2, color: [190, 90, 45] },
+    { value: 0, color: [230, 210, 100] },
+    { value: 0.2, color: [190, 210, 90] },
+    { value: 0.4, color: [90, 170, 70] },
+    { value: 0.6, color: [35, 125, 45] },
+    { value: 1, color: [0, 75, 25] },
+  ]
+
+  for (let i = 0; i < stops.length - 1; i++) {
+    const first = stops[i]
+    const second = stops[i + 1]
+
+    if (value >= first.value && value <= second.value) {
+      const ratio =
+        (value - first.value) / (second.value - first.value)
+
+      const r = Math.round(
+        first.color[0] + ratio * (second.color[0] - first.color[0])
+      )
+      const g = Math.round(
+        first.color[1] + ratio * (second.color[1] - first.color[1])
+      )
+      const b = Math.round(
+        first.color[2] + ratio * (second.color[2] - first.color[2])
+      )
+
+      return `rgb(${r},${g},${b})`
+    }
+  }
+
+  return 'rgba(0,0,0,0)'
+}
+
 export default function MapView({
   sites,
   selectingLocation,
   onLocationSelect,
 }: MapViewProps) {
   const mapElement = useRef<HTMLDivElement | null>(null)
-  const mapRef = useRef<LeafletMap | null>(null)
-  const markersRef = useRef<LeafletLayerGroup | null>(null)
+  const mapRef = useRef<L.Map | null>(null)
+  const markersRef = useRef<L.FeatureGroup | null>(null)
+  const communeLayerRef = useRef<L.GeoJSON | null>(null)
+  const rasterLayerRef = useRef<RasterLayerInstance | null>(null)
+
   const selectingRef = useRef(selectingLocation)
   const callbackRef = useRef(onLocationSelect)
 
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
   const [mapStatus, setMapStatus] = useState('جارٍ تحميل الخريطة...')
+  const [rasterMode, setRasterMode] = useState<RasterMode>('none')
+  const [rasterLoading, setRasterLoading] = useState(false)
 
   useEffect(() => {
     selectingRef.current = selectingLocation
     callbackRef.current = onLocationSelect
   }, [selectingLocation, onLocationSelect])
 
+  // إنشاء الخريطة وحدود البلديات
   useEffect(() => {
+    if (!mapElement.current) return
+
     let cancelled = false
 
     async function initializeMap() {
+      let map: L.Map | null = null
+
       try {
-        setMapStatus('جارٍ تحميل مكتبة الخرائط...')
+        setMapStatus('جارٍ تحميل الخريطة...')
 
-        const L = await loadLeaflet()
+        map = L.map(mapElement.current as HTMLElement).setView(
+          [35.737, 0.555],
+          9
+        )
 
-        if (cancelled || !mapElement.current) return
-
-        const map = L.map(mapElement.current).setView([35.737, 0.555], 9)
         mapRef.current = map
 
         L.tileLayer(
@@ -233,9 +189,9 @@ export default function MapView({
           }
         ).addTo(map)
 
-        markersRef.current = L.layerGroup().addTo(map)
+        markersRef.current = L.featureGroup().addTo(map)
 
-        map.on('click', (event) => {
+        map.on('click', (event: L.LeafletMouseEvent) => {
           if (selectingRef.current) {
             callbackRef.current(
               event.latlng.lat.toFixed(6),
@@ -251,62 +207,63 @@ export default function MapView({
         })
 
         if (!response.ok) {
-          throw new Error(`تعذر تحميل ملف البلديات: ${response.status}`)
+          throw new Error(
+            `تعذر تحميل ملف البلديات: ${response.status}`
+          )
         }
 
         const geoData = (await response.json()) as GeoJSONData
 
         if (
-          !geoData ||
           geoData.type !== 'FeatureCollection' ||
           !Array.isArray(geoData.features) ||
           geoData.features.length !== 36
         ) {
-          throw new Error('ملف GeoJSON لا يحتوي على البلديات الـ36 المطلوبة.')
+          throw new Error(
+            'ملف GeoJSON لا يحتوي على البلديات الـ36 المطلوبة.'
+          )
         }
 
-        if (cancelled) return
+        if (cancelled) {
+          map.remove()
+          return
+        }
 
-        const whiteOutline = L.geoJSON(geoData, {
-          pane: 'overlayPane',
-          style: {
-            color: '#ffffff',
-            weight: 6,
-            opacity: 0.95,
-            fillOpacity: 0,
-          },
-        })
-
-        whiteOutline.addTo(map)
-
-        const communeLayer = L.geoJSON(geoData, {
-          pane: 'overlayPane',
-          style: {
-            color: '#00ff35',
-            weight: 3,
-            opacity: 1,
-            fillColor: '#22c55e',
-            fillOpacity: 0.08,
-          },
-
-          onEachFeature: (feature, layer) => {
-            const englishName = feature.properties?.shapeName?.trim() || ''
-            const arabicName = communeNames[englishName] || englishName
-
-            if (!arabicName) return
-
-            layer.bindTooltip(escapeHtml(arabicName), {
-              permanent: true,
-              direction: 'center',
-              className: 'commune-name-tooltip',
+        const communeLayer = L.geoJSON(
+          geoData as unknown as GeoJSON.GeoJsonObject,
+          {
+            style: {
+              color: '#00ff35',
+              weight: 3,
               opacity: 1,
-              interactive: false,
-            })
-          },
-        })
+              fillColor: '#22c55e',
+              fillOpacity: 0.08,
+            },
+
+            onEachFeature: (feature, layer) => {
+              const properties = feature.properties as
+                | { shapeName?: string }
+                | undefined
+
+              const englishName = properties?.shapeName?.trim() || ''
+              const arabicName =
+                communeNames[englishName] || englishName
+
+              if (!arabicName) return
+
+              layer.bindTooltip(escapeHtml(arabicName), {
+                permanent: true,
+                direction: 'center',
+                className: 'commune-name-tooltip',
+                opacity: 1,
+                interactive: false,
+              })
+            },
+          }
+        )
 
         communeLayer.addTo(map)
-        communeLayer.bringToFront()
+        communeLayerRef.current = communeLayer
 
         map.fitBounds(communeLayer.getBounds(), {
           padding: [25, 25],
@@ -318,14 +275,18 @@ export default function MapView({
         if (!cancelled) {
           setReady(true)
           setError('')
-          setMapStatus(`تم تحميل حدود البلديات بنجاح: ${geoData.features.length} بلدية`)
+          setMapStatus(
+            `تم تحميل حدود البلديات بنجاح: ${geoData.features.length} بلدية`
+          )
         }
       } catch (err) {
         console.error('Map initialization error:', err)
 
         if (!cancelled) {
           setError(
-            err instanceof Error ? err.message : 'حدث خطأ أثناء تحميل الخريطة'
+            err instanceof Error
+              ? err.message
+              : 'حدث خطأ أثناء تحميل الخريطة'
           )
           setMapStatus('تعذر تحميل حدود البلديات')
         }
@@ -336,18 +297,141 @@ export default function MapView({
 
     return () => {
       cancelled = true
+      rasterLayerRef.current = null
+      communeLayerRef.current = null
+      markersRef.current = null
       mapRef.current?.remove()
       mapRef.current = null
-      markersRef.current = null
       setReady(false)
     }
   }, [])
 
+  // تحميل طبقة True Color أو NDVI عند اختيارها
+  useEffect(() => {
+    const currentMap = mapRef.current
+
+    if (!ready || !currentMap) return
+
+    let cancelled = false
+
+    async function loadRaster() {
+      const activeMap = mapRef.current
+
+      if (!activeMap) return
+
+      if (rasterLayerRef.current) {
+        activeMap.removeLayer(rasterLayerRef.current)
+        rasterLayerRef.current = null
+      }
+
+      if (rasterMode === 'none') {
+        setRasterLoading(false)
+        return
+      }
+
+      setRasterLoading(true)
+      setError('')
+
+      try {
+        const fileName =
+          rasterMode === 'truecolor'
+            ? 'relizane-true-color.tif'
+            : 'relizane-ndvi-original-values.tif'
+
+        setMapStatus(
+          rasterMode === 'truecolor'
+            ? 'جارٍ تحميل صورة الأقمار الصناعية...'
+            : 'جارٍ تحميل وتحليل طبقة NDVI...'
+        )
+
+        const response = await fetch(`/data/${fileName}`, {
+          cache: 'no-store',
+        })
+
+        if (!response.ok) {
+          throw new Error(
+            `تعذر العثور على ملف ${fileName}. تأكدي من وجوده داخل public/data`
+          )
+        }
+
+        const arrayBuffer = await response.arrayBuffer()
+        const georaster = await parseGeoraster(arrayBuffer)
+
+        if (cancelled || !mapRef.current) return
+
+        const layer = new GeoRasterLayer({
+          georaster,
+          opacity: rasterMode === 'truecolor' ? 0.95 : 0.78,
+          resolution: 128,
+
+          pixelValuesToColorFn: (values: number[]) => {
+            if (!values || values.length === 0) {
+              return 'rgba(0,0,0,0)'
+            }
+
+            if (rasterMode === 'truecolor') {
+              const red = values[0]
+              const green = values[1]
+              const blue = values[2]
+
+              if (
+                !Number.isFinite(red) ||
+                !Number.isFinite(green) ||
+                !Number.isFinite(blue)
+              ) {
+                return 'rgba(0,0,0,0)'
+              }
+
+              return `rgb(${Math.round(red)},${Math.round(green)},${Math.round(blue)})`
+            }
+
+            return getNdviColor(values[0])
+          },
+        }) as unknown as RasterLayerInstance
+
+        const targetMap = mapRef.current
+
+        if (cancelled || !targetMap) return
+
+        layer.addTo(targetMap)
+        rasterLayerRef.current = layer
+
+        communeLayerRef.current?.bringToFront()
+        markersRef.current?.bringToFront()
+
+        setMapStatus(
+          rasterMode === 'truecolor'
+            ? 'تم تحميل صورة True Color بنجاح'
+            : 'تم تحميل طبقة NDVI بنجاح'
+        )
+      } catch (err) {
+        console.error('Raster loading error:', err)
+
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'تعذر تحميل طبقة الاستشعار عن بعد'
+          )
+          setMapStatus('تعذر تحميل الطبقة الفضائية')
+        }
+      } finally {
+        if (!cancelled) {
+          setRasterLoading(false)
+        }
+      }
+    }
+
+    loadRaster()
+
+    return () => {
+      cancelled = true
+    }
+  }, [rasterMode, ready])
+
+  // إظهار مواقع المفرغات على الخريطة
   useEffect(() => {
     if (!ready || !markersRef.current) return
-
-    const L = getLeaflet()
-    if (!L) return
 
     const layer = markersRef.current
     layer.clearLayers()
@@ -401,6 +485,8 @@ export default function MapView({
         .bindPopup(popup)
         .addTo(layer)
     })
+
+    layer.bringToFront()
   }, [sites, ready])
 
   return (
@@ -410,6 +496,69 @@ export default function MapView({
           انقري على الخريطة لتحديد موقع المفرغة
         </div>
       )}
+
+      <div className="raster-controls">
+        <div className="raster-controls-title">
+          طبقات الاستشعار عن بعد
+        </div>
+
+        <div className="raster-buttons">
+          <button
+            type="button"
+            className={rasterMode === 'none' ? 'active' : ''}
+            onClick={() => setRasterMode('none')}
+          >
+            الخريطة الأصلية
+          </button>
+
+          <button
+            type="button"
+            className={rasterMode === 'truecolor' ? 'active' : ''}
+            onClick={() => setRasterMode('truecolor')}
+          >
+            True Color
+          </button>
+
+          <button
+            type="button"
+            className={rasterMode === 'ndvi' ? 'active' : ''}
+            onClick={() => setRasterMode('ndvi')}
+          >
+            NDVI
+          </button>
+        </div>
+
+        {rasterLoading && (
+          <div className="raster-loading">
+            جارٍ تحميل الطبقة الفضائية، يرجى الانتظار...
+          </div>
+        )}
+
+        {rasterMode === 'truecolor' && (
+          <div className="raster-description">
+            صورة الأقمار الصناعية بالألوان الطبيعية (RGB)
+          </div>
+        )}
+
+        {rasterMode === 'ndvi' && (
+          <div className="ndvi-legend">
+            <strong>مؤشر الغطاء النباتي NDVI</strong>
+            <div className="ndvi-gradient" />
+            <div className="ndvi-values">
+              <span>-1</span>
+              <span>-0.2</span>
+              <span>0</span>
+              <span>0.4</span>
+              <span>1</span>
+            </div>
+            <div className="ndvi-description">
+              ألوان بنية وصفراء: غطاء نباتي ضعيف أو غائب.
+              <br />
+              ألوان خضراء: غطاء نباتي أكثر كثافة.
+            </div>
+          </div>
+        )}
+      </div>
 
       <div
         style={{
@@ -471,6 +620,100 @@ export default function MapView({
             border-radius: 8px;
             text-align: center;
           }
+
+          .raster-controls {
+            padding: 13px;
+            margin-bottom: 10px;
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
+            border-radius: 10px;
+          }
+
+          .raster-controls-title {
+            color: #14532d;
+            font-weight: 900;
+            margin-bottom: 10px;
+            text-align: center;
+          }
+
+          .raster-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 8px;
+          }
+
+          .raster-buttons button {
+            border: 1px solid #15803d;
+            background: white;
+            color: #166534;
+            border-radius: 7px;
+            padding: 9px 15px;
+            cursor: pointer;
+            font-weight: 700;
+            font-size: 13px;
+          }
+
+          .raster-buttons button.active {
+            background: #15803d;
+            color: white;
+          }
+
+          .raster-loading {
+            text-align: center;
+            margin-top: 10px;
+            color: #166534;
+            font-size: 13px;
+            font-weight: bold;
+          }
+
+          .raster-description {
+            text-align: center;
+            margin-top: 10px;
+            color: #166534;
+            font-size: 12px;
+          }
+
+          .ndvi-legend {
+            margin: 12px auto 0;
+            max-width: 420px;
+            color: #14532d;
+            font-size: 12px;
+          }
+
+          .ndvi-legend strong {
+            display: block;
+            text-align: center;
+            margin-bottom: 8px;
+          }
+
+          .ndvi-gradient {
+            height: 15px;
+            border-radius: 5px;
+            background: linear-gradient(
+              to left,
+              #004b19,
+              #237d2d,
+              #5aaa46,
+              #bed25a,
+              #e6d264,
+              #be5a2d,
+              #782d23
+            );
+          }
+
+          .ndvi-values {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 4px;
+            direction: ltr;
+          }
+
+          .ndvi-description {
+            margin-top: 8px;
+            line-height: 1.8;
+            text-align: right;
+          }
         `}
       </style>
 
@@ -490,6 +733,19 @@ export default function MapView({
         <span style={{ color: '#d97706' }}>● خطر متوسط</span>
         <span style={{ color: '#16a34a' }}>● خطر منخفض</span>
       </div>
+
+      {rasterMode === 'ndvi' && (
+        <div
+          style={{
+            fontSize: '12px',
+            color: '#64748b',
+            textAlign: 'center',
+            padding: '4px 10px 12px',
+          }}
+        >
+          ملاحظة: مؤشر NDVI يوضح حالة الغطاء النباتي، ولا يثبت وحده وجود مفرغة عشوائية.
+        </div>
+      )}
     </div>
   )
 }
