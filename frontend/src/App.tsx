@@ -1,5 +1,5 @@
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   ResponsiveContainer,
   PieChart,
@@ -407,6 +407,16 @@ function rowToSite(row: DumpSiteRow): Site {
   }
 }
 
+type SitePhoto = {
+  id: string
+  site_id: number
+  uploaded_by: string
+  file_path: string
+  file_name: string
+  created_at: string
+  signedUrl: string | null
+}
+
 function App() {
   const [sites, setSites] = useState<Site[]>(() => {
     try {
@@ -435,6 +445,74 @@ function App() {
   const [form, setForm] = useState(emptyForm)
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [showOrganizations, setShowOrganizations] = useState(false)
+  const [selectedPhotos, setSelectedPhotos] = useState<File[]>([])
+  const [sitePhotos, setSitePhotos] = useState<Record<number, SitePhoto[]>>({})
+  const photoPreviews = useMemo(
+    () => selectedPhotos.map(file => ({ file, url: URL.createObjectURL(file) })),
+    [selectedPhotos],
+  )
+
+  useEffect(() => {
+    return () => {
+      photoPreviews.forEach(photo => URL.revokeObjectURL(photo.url))
+    }
+  }, [photoPreviews])
+
+  // تحميل بيانات الصور وإنشاء روابط مؤقتة خاصة بصاحب المفرغة فقط.
+  useEffect(() => {
+    if (!currentUserId || sites.length === 0) {
+      setSitePhotos({})
+      return
+    }
+
+    let active = true
+    const loadPhotos = async () => {
+      const siteIds = sites
+        .map(site => Number(site.id))
+        .filter(id => Number.isSafeInteger(id) && id > 0)
+
+      if (siteIds.length === 0) return
+
+      const db = supabase as any
+      const { data, error } = await db
+        .from('site_photos')
+        .select('id, site_id, uploaded_by, file_path, file_name, created_at')
+        .in('site_id', siteIds)
+        .order('created_at', { ascending: false })
+
+      if (error) {
+        console.error('تعذر تحميل صور المفرغات:', error.message)
+        return
+      }
+
+      const rows = (data ?? []) as Omit<SitePhoto, 'signedUrl'>[]
+      const photosWithUrls = await Promise.all(
+        rows.map(async photo => {
+          const { data: signedData, error: signedError } = await supabase.storage
+            .from('site-photos')
+            .createSignedUrl(photo.file_path, 60 * 60)
+
+          if (signedError) {
+            console.error('تعذر إنشاء رابط عرض الصورة:', signedError.message)
+          }
+
+          return { ...photo, signedUrl: signedData?.signedUrl ?? null }
+        }),
+      )
+
+      if (!active) return
+      const grouped: Record<number, SitePhoto[]> = {}
+      photosWithUrls.forEach(photo => {
+        const siteId = Number(photo.site_id)
+        if (!grouped[siteId]) grouped[siteId] = []
+        grouped[siteId].push(photo)
+      })
+      setSitePhotos(grouped)
+    }
+
+    void loadPhotos()
+    return () => { active = false }
+  }, [currentUserId, sites])
 
   useEffect(() => {
     try {
@@ -516,6 +594,38 @@ function App() {
     }
   }, [])
 
+  const handlePhotoSelection = (files: FileList | null) => {
+    if (!files) return
+
+    const incoming = Array.from(files)
+    const valid: File[] = []
+    const rejected: string[] = []
+
+    incoming.forEach(file => {
+      if (!file.type.startsWith('image/')) {
+        rejected.push(`${file.name}: ليس ملف صورة`)
+      } else if (file.size > 5 * 1024 * 1024) {
+        rejected.push(`${file.name}: يتجاوز 5 ميغابايت`)
+      } else {
+        valid.push(file)
+      }
+    })
+
+    const remaining = Math.max(0, 5 - selectedPhotos.length)
+    const accepted = valid.slice(0, remaining)
+    const overflow = valid.length - accepted.length
+
+    if (accepted.length) {
+      setSelectedPhotos(previous => [...previous, ...accepted])
+    }
+
+    if (rejected.length || overflow > 0) {
+      const messages = [...rejected]
+      if (overflow > 0) messages.push(`تم تجاهل ${overflow} صورة لأن الحد الأقصى هو 5 صور.`)
+      window.alert(messages.join('\n'))
+    }
+  }
+
   const addSite = async () => {
     if (
       !form.name.trim() ||
@@ -564,6 +674,8 @@ function App() {
       )
       return
     }
+
+    const photosToUpload = [...selectedPhotos]
 
     const siteValues = {
       name: form.name.trim(),
@@ -616,10 +728,115 @@ function App() {
 
     setForm(emptyForm)
     setShowForm(false)
+    setSelectedPhotos([])
 
-    window.alert(
-      'تم حفظ الموقع بنجاح في قاعدة البيانات وظهوره على الخريطة.',
-    )
+    let uploadedCount = 0
+    let failedCount = 0
+    const db = supabase as any
+
+    // حفظ الصور عملية مستقلة؛ فشل صورة لا يؤدي إلى حذف الموقع المسجل.
+    for (const file of photosToUpload) {
+      if (!Number.isSafeInteger(newSite.id) || newSite.id > 2147483647) {
+        failedCount += 1
+        continue
+      }
+
+      const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'photo'
+      const filePath = `${currentUserId}/${newSite.id}/${crypto.randomUUID()}-${safeFileName}`
+      const { error: uploadError } = await supabase.storage
+        .from('site-photos')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: file.type,
+        })
+
+      if (uploadError) {
+        console.error('تعذر رفع الصورة:', file.name, uploadError.message)
+        failedCount += 1
+        continue
+      }
+
+      const { data: photoRow, error: metadataError } = await db
+        .from('site_photos')
+        .insert({
+          site_id: newSite.id,
+          uploaded_by: currentUserId,
+          file_path: filePath,
+          file_name: file.name,
+        })
+        .select('id, site_id, uploaded_by, file_path, file_name, created_at')
+        .single()
+
+      if (metadataError || !photoRow) {
+        console.error('تعذر تسجيل بيانات الصورة:', metadataError?.message)
+        await supabase.storage.from('site-photos').remove([filePath])
+        failedCount += 1
+        continue
+      }
+
+      const { data: signedData, error: signedError } = await supabase.storage
+        .from('site-photos')
+        .createSignedUrl(filePath, 60 * 60)
+      if (signedError) {
+        console.error('تعذر إنشاء رابط عرض الصورة:', signedError.message)
+      }
+
+      setSitePhotos(previous => ({
+        ...previous,
+        [newSite.id]: [
+          ...(previous[newSite.id] ?? []),
+          { ...photoRow, signedUrl: signedData?.signedUrl ?? null } as SitePhoto,
+        ],
+      }))
+      uploadedCount += 1
+    }
+
+    if (photosToUpload.length === 0) {
+      window.alert('تم حفظ الموقع بنجاح في قاعدة البيانات وظهوره على الخريطة.')
+    } else if (failedCount === 0) {
+      window.alert(`تم حفظ الموقع ورفع ${uploadedCount} صورة بنجاح.`)
+    } else {
+      window.alert(`تم حفظ الموقع بنجاح، ورُفعت ${uploadedCount} صورة. تعذر رفع ${failedCount} صورة. يمكنك إعادة المحاولة لاحقًا.`)
+    }
+  }
+
+  const deleteSitePhoto = async (photo: SitePhoto) => {
+    if (!currentUserId) {
+      window.alert('يرجى تسجيل الدخول أولًا.')
+      return
+    }
+
+    if (!window.confirm(`هل تريدين حذف الصورة «${photo.file_name}»؟`)) return
+
+    const { error: storageError } = await supabase.storage
+      .from('site-photos')
+      .remove([photo.file_path])
+
+    if (storageError) {
+      window.alert(`تعذر حذف ملف الصورة: ${storageError.message}`)
+      return
+    }
+
+    const db = supabase as any
+    const { error: rowError } = await db
+      .from('site_photos')
+      .delete()
+      .eq('id', photo.id)
+      .eq('uploaded_by', currentUserId)
+
+    setSitePhotos(previous => ({
+      ...previous,
+      [Number(photo.site_id)]: (previous[Number(photo.site_id)] ?? []).filter(item => item.id !== photo.id),
+    }))
+
+    if (rowError) {
+      console.error('تعذر حذف سجل الصورة:', rowError.message)
+      window.alert(`حُذف ملف الصورة، لكن تعذر حذف بياناتها: ${rowError.message}`)
+      return
+    }
+
+    window.alert('تم حذف الصورة بنجاح.')
   }
 
   const deleteSite = async (id: number) => {
@@ -634,6 +851,29 @@ function App() {
     if (!currentUserId) {
       window.alert('يرجى تسجيل الدخول أولًا.')
       return
+    }
+
+    const db = supabase as any
+    const { data: photoRows, error: photosError } = await db
+      .from('site_photos')
+      .select('file_path')
+      .eq('site_id', id)
+
+    if (photosError) {
+      window.alert(`تعذر التحقق من صور الموقع؛ لم يُحذف الموقع: ${photosError.message}`)
+      return
+    }
+
+    const filePaths = (photoRows ?? []).map((row: { file_path: string }) => row.file_path)
+    if (filePaths.length > 0) {
+      const { error: storageCleanupError } = await supabase.storage
+        .from('site-photos')
+        .remove(filePaths)
+
+      if (storageCleanupError) {
+        window.alert(`تعذر حذف صور الموقع من التخزين؛ لم يُحذف الموقع: ${storageCleanupError.message}`)
+        return
+      }
     }
 
     const { error } = await supabase
@@ -655,6 +895,12 @@ function App() {
     setSites(previous =>
       previous.filter(site => site.id !== id),
     )
+    setSitePhotos(previous => {
+      const next = { ...previous }
+      delete next[id]
+      return next
+    })
+
   }
 
   const resetFilters = () => {
@@ -1460,6 +1706,35 @@ function App() {
               style={inputStyle}
             />
 
+            <section style={{ ...innerCardStyle, margin: '18px 0' }}>
+              <h3 style={{ marginTop: 0 }}>الصور الميدانية للمفرغة</h3>
+              <p style={mutedStyle}>يمكنك اختيار حتى 5 صور، على ألا يتجاوز حجم الصورة الواحدة 5 ميغابايت. الصور خاصة بصاحب المفرغة.</p>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={event => {
+                  handlePhotoSelection(event.target.files)
+                  event.target.value = ''
+                }}
+                style={{ ...inputStyle, backgroundColor: '#fff' }}
+              />
+              <p style={mutedStyle}>الصور المختارة: {selectedPhotos.length} / 5</p>
+              {photoPreviews.length > 0 && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 10, marginTop: 12 }}>
+                  {photoPreviews.map((photo, index) => (
+                    <div key={`${photo.file.name}-${photo.file.lastModified}-${index}`} style={{ border: '1px solid #dce8df', borderRadius: 8, padding: 8, backgroundColor: '#fff' }}>
+                      <img src={photo.url} alt={photo.file.name} style={{ width: '100%', height: 105, objectFit: 'cover', borderRadius: 6 }} />
+                      <p style={{ fontSize: 12, overflowWrap: 'anywhere' }}>{photo.file.name}</p>
+                      <button type="button" onClick={() => setSelectedPhotos(previous => previous.filter((_, itemIndex) => itemIndex !== index))} style={{ ...buttonStyle, backgroundColor: '#b83232', padding: '6px 10px', fontSize: 12 }}>
+                        إزالة
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
             <textarea
               placeholder="وصف الموقع"
               value={form.description}
@@ -1810,6 +2085,30 @@ function App() {
                   <strong>خط الطول:</strong>{' '}
                   {site.longitude || 'غير محدد'}
                 </p>
+
+                <section style={{ margin: '18px 0', padding: 14, backgroundColor: '#f7faf8', border: '1px solid #dce8df', borderRadius: 10 }}>
+                  <h4 style={{ marginTop: 0 }}>الصور الميدانية ({(sitePhotos[site.id] ?? []).length})</h4>
+                  {(sitePhotos[site.id] ?? []).length === 0 ? (
+                    <p style={mutedStyle}>لا توجد صور مرفقة بهذا الموقع بعد.</p>
+                  ) : (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(145px, 1fr))', gap: 12 }}>
+                      {(sitePhotos[site.id] ?? []).map(photo => (
+                        <div key={photo.id} style={{ backgroundColor: '#fff', border: '1px solid #dce8df', borderRadius: 8, padding: 8 }}>
+                          {photo.signedUrl ? (
+                            <a href={photo.signedUrl} target="_blank" rel="noreferrer" title="فتح الصورة بالحجم الكامل">
+                              <img src={photo.signedUrl} alt={photo.file_name} loading="lazy" style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 6 }} />
+                            </a>
+                          ) : (
+                            <div style={{ height: 120, display: 'grid', placeItems: 'center', backgroundColor: '#edf4ef', borderRadius: 6 }}>تعذر عرض الصورة</div>
+                          )}
+                          <p style={{ fontSize: 12, overflowWrap: 'anywhere' }}>{photo.file_name}</p>
+                          <p style={{ ...mutedStyle, fontSize: 11 }}>{new Date(photo.created_at).toLocaleDateString('ar-DZ')}</p>
+                          <button type="button" onClick={() => deleteSitePhoto(photo)} style={{ ...buttonStyle, backgroundColor: '#b83232', padding: '6px 10px', fontSize: 12 }}>حذف الصورة</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
 
                 <div
                   style={{
