@@ -31,10 +31,21 @@ type RasterLayerInstance = L.Layer & {
   addTo: (map: L.Map) => RasterLayerInstance
 }
 
+type BoundaryData = {
+  type: 'Polygon'
+  coordinates: number[][][]
+}
+
 type MapViewProps = {
   sites: Site[]
   selectingLocation: boolean
   onLocationSelect: (latitude: string, longitude: string) => void
+  onBoundaryChange?: (
+    boundary: BoundaryData | null,
+    areaM2: number,
+    areaHectares: number
+  ) => void
+  savedBoundary?: BoundaryData | null
 }
 
 const communeNames: Record<string, string> = {
@@ -129,10 +140,34 @@ function getNdviColor(value: number): string {
   return 'rgba(0,0,0,0)'
 }
 
+// حساب مساحة المضلع على سطح الأرض بالمتر المربع
+function calculatePolygonArea(points: L.LatLng[]): number {
+  if (points.length < 3) return 0
+
+  const earthRadius = 6378137
+  let area = 0
+
+  for (let i = 0; i < points.length; i++) {
+    const current = points[i]
+    const next = points[(i + 1) % points.length]
+
+    const lat1 = (current.lat * Math.PI) / 180
+    const lat2 = (next.lat * Math.PI) / 180
+    const lng1 = (current.lng * Math.PI) / 180
+    const lng2 = (next.lng * Math.PI) / 180
+
+    area += (lng2 - lng1) * (2 + Math.sin(lat1) + Math.sin(lat2))
+  }
+
+  return Math.abs((area * earthRadius * earthRadius) / 2)
+}
+
 export default function MapView({
   sites,
   selectingLocation,
   onLocationSelect,
+  onBoundaryChange,
+  savedBoundary = null,
 }: MapViewProps) {
   const mapElement = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
@@ -140,8 +175,13 @@ export default function MapView({
   const communeLayerRef = useRef<L.GeoJSON | null>(null)
   const rasterLayerRef = useRef<RasterLayerInstance | null>(null)
 
+  const drawingLayerRef = useRef<L.FeatureGroup | null>(null)
+  const savedBoundaryLayerRef = useRef<L.GeoJSON | null>(null)
+  const drawingPointsRef = useRef<L.LatLng[]>([])
+
   const selectingRef = useRef(selectingLocation)
   const callbackRef = useRef(onLocationSelect)
+  const boundaryCallbackRef = useRef(onBoundaryChange)
 
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
@@ -149,10 +189,46 @@ export default function MapView({
   const [rasterMode, setRasterMode] = useState<RasterMode>('none')
   const [rasterLoading, setRasterLoading] = useState(false)
 
+  const [drawingBoundary, setDrawingBoundary] = useState(false)
+  const [boundaryPoints, setBoundaryPoints] = useState<L.LatLng[]>([])
+  const [areaM2, setAreaM2] = useState(0)
+  const [areaHectares, setAreaHectares] = useState(0)
+
+  const drawingRef = useRef(false)
+
   useEffect(() => {
     selectingRef.current = selectingLocation
     callbackRef.current = onLocationSelect
-  }, [selectingLocation, onLocationSelect])
+    boundaryCallbackRef.current = onBoundaryChange
+  }, [selectingLocation, onLocationSelect, onBoundaryChange])
+
+  useEffect(() => {
+    drawingRef.current = drawingBoundary
+  }, [drawingBoundary])
+
+  // تحويل الحدود المحفوظة إلى طبقة Leaflet
+  useEffect(() => {
+    const map = mapRef.current
+
+    if (!ready || !map || !savedBoundaryLayerRef.current) return
+
+    const layer = savedBoundaryLayerRef.current
+    layer.clearLayers()
+
+    if (savedBoundary) {
+      L.geoJSON(savedBoundary as unknown as GeoJSON.GeoJsonObject, {
+        style: {
+          color: '#f97316',
+          weight: 3,
+          opacity: 1,
+          fillColor: '#fb923c',
+          fillOpacity: 0.2,
+        },
+      }).eachLayer((item) => layer.addLayer(item))
+    }
+
+    layer.bringToFront()
+  }, [savedBoundary, ready])
 
   // إنشاء الخريطة وحدود البلديات
   useEffect(() => {
@@ -190,8 +266,53 @@ export default function MapView({
         ).addTo(map)
 
         markersRef.current = L.featureGroup().addTo(map)
+        drawingLayerRef.current = L.featureGroup().addTo(map)
+        savedBoundaryLayerRef.current = L.geoJSON(undefined, {
+          style: {
+            color: '#f97316',
+            weight: 3,
+            opacity: 1,
+            fillColor: '#fb923c',
+            fillOpacity: 0.2,
+          },
+        }).addTo(map)
 
         map.on('click', (event: L.LeafletMouseEvent) => {
+          if (drawingRef.current) {
+            const point = event.latlng
+            drawingPointsRef.current.push(point)
+
+            const points = [...drawingPointsRef.current]
+            setBoundaryPoints(points)
+
+            const drawingLayer = drawingLayerRef.current
+            if (!drawingLayer) return
+
+            drawingLayer.clearLayers()
+
+            points.forEach((position, index) => {
+              L.circleMarker(position, {
+                radius: 5,
+                color: '#ffffff',
+                weight: 2,
+                fillColor: '#2563eb',
+                fillOpacity: 1,
+              })
+                .bindTooltip(`النقطة ${index + 1}`)
+                .addTo(drawingLayer!)
+            })
+
+            if (points.length >= 2) {
+              L.polyline(points, {
+                color: '#2563eb',
+                weight: 3,
+                dashArray: '6, 6',
+              }).addTo(drawingLayer)
+            }
+
+            return
+          }
+
           if (selectingRef.current) {
             callbackRef.current(
               event.latlng.lat.toFixed(6),
@@ -300,11 +421,98 @@ export default function MapView({
       rasterLayerRef.current = null
       communeLayerRef.current = null
       markersRef.current = null
+      drawingLayerRef.current = null
+      savedBoundaryLayerRef.current = null
       mapRef.current?.remove()
       mapRef.current = null
       setReady(false)
     }
   }, [])
+
+  // بدء رسم الحدود
+  function startDrawing() {
+    if (!mapRef.current || !drawingLayerRef.current) return
+
+    drawingPointsRef.current = []
+    drawingLayerRef.current.clearLayers()
+
+    setBoundaryPoints([])
+    setAreaM2(0)
+    setAreaHectares(0)
+    setDrawingBoundary(true)
+    drawingRef.current = true
+
+    setMapStatus('انقري على الخريطة لتحديد نقاط حدود المفرغة')
+    setError('')
+  }
+
+  // إنهاء الرسم وحساب المساحة
+  function finishDrawing() {
+    const points = drawingPointsRef.current
+    const drawingLayer = drawingLayerRef.current
+
+    if (!drawingLayer || points.length < 3) {
+      setError('يجب تحديد ثلاث نقاط على الأقل لرسم مساحة المفرغة.')
+      return
+    }
+
+    const polygon = L.polygon(points, {
+      color: '#2563eb',
+      weight: 3,
+      opacity: 1,
+      fillColor: '#3b82f6',
+      fillOpacity: 0.25,
+    })
+
+    drawingLayer.clearLayers()
+    polygon.addTo(drawingLayer)
+
+    const calculatedArea = calculatePolygonArea(points)
+    const hectares = calculatedArea / 10000
+
+    setAreaM2(calculatedArea)
+    setAreaHectares(hectares)
+    setDrawingBoundary(false)
+    drawingRef.current = false
+
+    const coordinates = points.map((point) => [
+      point.lng,
+      point.lat,
+    ])
+
+    coordinates.push([points[0].lng, points[0].lat])
+
+    const boundary: BoundaryData = {
+      type: 'Polygon',
+      coordinates: [coordinates],
+    }
+
+    boundaryCallbackRef.current?.(
+      boundary,
+      calculatedArea,
+      hectares
+    )
+
+    setMapStatus('تم رسم حدود المفرغة وحساب مساحتها بنجاح')
+    setError('')
+  }
+
+  // مسح الرسم
+  function clearDrawing() {
+    drawingPointsRef.current = []
+    drawingLayerRef.current?.clearLayers()
+
+    setBoundaryPoints([])
+    setAreaM2(0)
+    setAreaHectares(0)
+    setDrawingBoundary(false)
+    drawingRef.current = false
+
+    boundaryCallbackRef.current?.(null, 0, 0)
+
+    setMapStatus('تم مسح حدود المفرغة')
+    setError('')
+  }
 
   // تحميل طبقة True Color أو NDVI عند اختيارها
   useEffect(() => {
@@ -397,6 +605,8 @@ export default function MapView({
         rasterLayerRef.current = layer
 
         communeLayerRef.current?.bringToFront()
+        savedBoundaryLayerRef.current?.bringToFront()
+        drawingLayerRef.current?.bringToFront()
         markersRef.current?.bringToFront()
 
         setMapStatus(
@@ -496,6 +706,81 @@ export default function MapView({
           انقري على الخريطة لتحديد موقع المفرغة
         </div>
       )}
+
+      <div className="boundary-tools">
+        <strong>تحديد مساحة المفرغة</strong>
+
+        <div className="boundary-buttons">
+          {!drawingBoundary ? (
+            <button
+              type="button"
+              onClick={startDrawing}
+              disabled={!ready}
+            >
+              بدء رسم الحدود
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="finish-button"
+                onClick={finishDrawing}
+              >
+                إنهاء الرسم وحساب المساحة
+              </button>
+
+              <button
+                type="button"
+                className="cancel-button"
+                onClick={clearDrawing}
+              >
+                إلغاء الرسم
+              </button>
+            </>
+          )}
+
+          {!drawingBoundary && boundaryPoints.length > 0 && (
+            <button
+              type="button"
+              className="cancel-button"
+              onClick={clearDrawing}
+            >
+              مسح الحدود
+            </button>
+          )}
+        </div>
+
+        {drawingBoundary && (
+          <p className="boundary-instruction">
+            انقري على الخريطة لتحديد نقاط محيط المفرغة، ثم اضغطي على
+            «إنهاء الرسم وحساب المساحة». حددي ثلاث نقاط على الأقل.
+            <br />
+            عدد النقاط المحددة: {boundaryPoints.length}
+          </p>
+        )}
+
+        {areaM2 > 0 && (
+          <div className="area-results">
+            <div>
+              المساحة بالمتر المربع:
+              <strong>
+                {areaM2.toLocaleString('en-US', {
+                  maximumFractionDigits: 2,
+                })} m²
+              </strong>
+            </div>
+
+            <div>
+              المساحة بالهكتار:
+              <strong>
+                {areaHectares.toLocaleString('en-US', {
+                  maximumFractionDigits: 4,
+                })} ha
+              </strong>
+            </div>
+          </div>
+        )}
+      </div>
 
       <div className="raster-controls">
         <div className="raster-controls-title">
@@ -621,6 +906,87 @@ export default function MapView({
             text-align: center;
           }
 
+          .boundary-tools {
+            padding: 13px;
+            margin-bottom: 10px;
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            border-radius: 10px;
+            color: #1e3a8a;
+          }
+
+          .boundary-tools > strong {
+            display: block;
+            text-align: center;
+            margin-bottom: 10px;
+          }
+
+          .boundary-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 8px;
+          }
+
+          .boundary-buttons button {
+            border: 1px solid #1d4ed8;
+            background: #2563eb;
+            color: white;
+            border-radius: 7px;
+            padding: 9px 14px;
+            cursor: pointer;
+            font-weight: 700;
+            font-size: 13px;
+          }
+
+          .boundary-buttons button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+          }
+
+          .boundary-buttons button.finish-button {
+            background: #15803d;
+            border-color: #15803d;
+          }
+
+          .boundary-buttons button.cancel-button {
+            background: #64748b;
+            border-color: #64748b;
+          }
+
+          .boundary-instruction {
+            text-align: center;
+            line-height: 1.9;
+            font-size: 13px;
+            margin: 10px 0 0;
+          }
+
+          .area-results {
+            margin-top: 12px;
+            padding: 12px;
+            background: white;
+            border: 1px solid #bfdbfe;
+            border-radius: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-around;
+            gap: 10px;
+            font-size: 13px;
+          }
+
+          .area-results div {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            text-align: center;
+          }
+
+          .area-results strong {
+            color: #15803d;
+            font-size: 16px;
+            direction: ltr;
+          }
+
           .raster-controls {
             padding: 13px;
             margin-bottom: 10px;
@@ -732,6 +1098,7 @@ export default function MapView({
         <span style={{ color: '#dc2626' }}>● خطر مرتفع</span>
         <span style={{ color: '#d97706' }}>● خطر متوسط</span>
         <span style={{ color: '#16a34a' }}>● خطر منخفض</span>
+        <span style={{ color: '#2563eb' }}>▰ حدود المفرغة المرسومة</span>
       </div>
 
       {rasterMode === 'ndvi' && (

@@ -18,6 +18,11 @@ import MapView from './MapView'
 import { calculateRisk } from './riskEngine'
 import { supabase } from './supabase'
 
+export type BoundaryData = {
+  type: 'Polygon'
+  coordinates: number[][][]
+}
+
 export type Site = {
   id: number
   name: string
@@ -36,6 +41,9 @@ export type Site = {
   description: string
   latitude: string
   longitude: string
+  boundary?: BoundaryData | null
+  areaM2?: number
+  areaHectares?: number
 }
 
 const RISK_COLORS: Record<string, string> = {
@@ -103,6 +111,9 @@ const emptyForm = {
   wasteQuantity: '0',
   burning: '0',
   leakage: '0',
+  boundary: null as BoundaryData | null,
+  areaM2: 0,
+  areaHectares: 0,
 }
 
 const factorOptions = [
@@ -366,6 +377,9 @@ type DumpSiteRow = {
   description: string | null
   latitude: number | string | null
   longitude: number | string | null
+  boundary?: BoundaryData | null
+  area_m2?: number | null
+  area_hectares?: number | null
 }
 
 function rowToSite(row: DumpSiteRow): Site {
@@ -387,6 +401,9 @@ function rowToSite(row: DumpSiteRow): Site {
     description: row.description ?? '',
     latitude: row.latitude == null ? '' : String(row.latitude),
     longitude: row.longitude == null ? '' : String(row.longitude),
+    boundary: row.boundary ?? null,
+    areaM2: row.area_m2 ?? 0,
+    areaHectares: row.area_hectares ?? 0,
   }
 }
 
@@ -410,6 +427,7 @@ function App() {
   })
 
   const [showForm, setShowForm] = useState(false)
+  const [selectedBoundarySiteId, setSelectedBoundarySiteId] = useState<number | null>(null)
   const [search, setSearch] = useState('')
   const [filterCommune, setFilterCommune] = useState('')
   const [filterRisk, setFilterRisk] = useState('')
@@ -564,6 +582,9 @@ function App() {
       description: form.description.trim(),
       latitude: lat,
       longitude: lng,
+      boundary: form.boundary,
+      area_m2: form.areaM2,
+      area_hectares: form.areaHectares,
       user_id: currentUserId,
     }
 
@@ -591,6 +612,7 @@ function App() {
       ...previous.filter(site => site.id !== newSite.id),
       newSite,
     ])
+    setSelectedBoundarySiteId(newSite.id)
 
     setForm(emptyForm)
     setShowForm(false)
@@ -1261,6 +1283,23 @@ function App() {
               : 'افتحي نموذج التسجيل لاختيار إحداثيات مفرغة جديدة من الخريطة.'}
           </p>
 
+          <div style={{ ...mutedStyle, marginBottom: 10 }}>
+            <label htmlFor="boundary-site-select" style={{ display: 'block', marginBottom: 6 }}>
+              عرض حدود مفرغة مسجلة
+            </label>
+            <select
+              id="boundary-site-select"
+              style={inputStyle}
+              value={selectedBoundarySiteId ?? ''}
+              onChange={event => setSelectedBoundarySiteId(event.target.value ? Number(event.target.value) : null)}
+            >
+              <option value="">لا تعرض حدود موقع محفوظ</option>
+              {sites.filter(site => site.boundary).map(site => (
+                <option key={site.id} value={site.id}>{site.name} — {site.commune}</option>
+              ))}
+            </select>
+          </div>
+
           <MapView
             sites={sites}
             selectingLocation={showForm}
@@ -1271,6 +1310,19 @@ function App() {
                 longitude,
               }))
             }}
+            onBoundaryChange={(boundary, areaM2, areaHectares) => {
+              setForm(previous => ({
+                ...previous,
+                boundary,
+                areaM2,
+                areaHectares,
+              }))
+            }}
+            savedBoundary={
+              showForm
+                ? form.boundary
+                : sites.find(site => site.id === selectedBoundarySiteId)?.boundary ?? null
+            }
           />
         </section>
 
