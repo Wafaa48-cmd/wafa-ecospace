@@ -1186,6 +1186,72 @@ function App() {
           متابعة المفرغات العشوائية والمخاطر البيئية في ولاية غليزان
         </p>
 
+        {/* فيديو توضيحي يبرز المشكلة البيئية التي أُنشئت المنصة لمعالجتها */}
+        <section
+          dir="rtl"
+          style={{
+            ...cardStyle,
+            marginTop: 22,
+            marginBottom: 22,
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              maxWidth: 850,
+              margin: '0 auto 22px',
+              overflow: 'hidden',
+              borderRadius: 12,
+              backgroundColor: '#000',
+            }}
+          >
+            <video
+              controls
+              playsInline
+              preload="metadata"
+              style={{
+                display: 'block',
+                width: '100%',
+                maxHeight: 520,
+                objectFit: 'contain',
+              }}
+            >
+              <source
+                src="/videos/wafa-environment.mp4"
+                type="video/mp4"
+              />
+              متصفحك لا يدعم تشغيل الفيديو.
+            </video>
+          </div>
+
+          <h2
+            style={{
+              color: '#287a4b',
+              marginTop: 0,
+              marginBottom: 12,
+            }}
+          >
+            من المشكلة البيئية إلى الحل الرقمي
+          </h2>
+
+          <p style={{ color: '#44534a', lineHeight: 1.9, marginBottom: 14 }}>
+            يسلط هذا الفيديو الضوء على مشكلة المفرغات العشوائية وما تسببه من تلوث وتشويه للمحيط الطبيعي، ويبرز الحاجة إلى وسيلة رقمية لرصد هذه المواقع وتحديدها جغرافياً وتقييم مخاطرها ومتابعتها.
+          </p>
+
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '10px 24px',
+              color: '#66756b',
+              fontSize: 14,
+            }}
+          >
+            <span>تاريخ نشر الفيديو: 23 أوت 2026.</span>
+            <span>تصوير: Mehdi Abina</span>
+          </div>
+        </section>
+
         <div style={{ margin: '18px 0 22px', display: 'flex', flexWrap: 'wrap', gap: 10 }}>
           <button
             type="button"
